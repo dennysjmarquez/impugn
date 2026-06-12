@@ -782,6 +782,155 @@ Este enfoque fue reemplazado por el modelo de **mismo prompt unificado** (v2.0).
 
 ---
 
+## Guía de Configuración
+
+### Parámetros Ajustables en `council.sh`
+
+| Variable | Dónde | Qué controla | Valor por defecto |
+|----------|-------|-------------|-------------------|
+| `N_MODELS` | Por modo | Número de modelos que participan | 2-5 según modo |
+| `ROUNDS` | Por modo | Rondas de debate post-síntesis | 0-3 según modo |
+| `LATERAL_SLOT` | Modos THOROUGH+ | Índice del modelo que será Lateral Thinker | 4 |
+| `PRIMARY_MODELS` | Por modo | Lista de modelos a consultar (en orden) | Varía por modo |
+| `FALLBACK_MODELS` | Por modo | Modelos de respaldo si el primario falla | Varía por modo |
+| `PM_PRIMARY` | Línea 265 | Modelo que actúa como Project Manager | `opencode/big-pickle` |
+| `PM_FALLBACK` | Línea 266 | Fallback del PM | `openrouter/openrouter/free` |
+| `FE_PRIMARY` | Línea 267 | Modelo para Fresh Eyes | `openrouter/openrouter/free` |
+| `FE_FALLBACK` | Línea 268 | Fallback de Fresh Eyes | `opencode/mimo-v2.5-free` |
+
+### Cómo Cambiar los Modelos
+
+Para usar modelos de pago o diferentes, edita los arrays `PRIMARY_MODELS` y `FALLBACK_MODELS` en la sección de tu modo preferido (líneas 94-123). El formato es:
+
+```bash
+PRIMARY_MODELS=("opencode/mi-modelo" "openrouter/otro-modelo" ...)
+```
+
+El modelo gratuito `opencode/mimo-v2.5-free` es rápido pero limitado en calidad. Si necesitas respuestas más profundas, configura modelos de pago como `anthropic/claude-sonnet-4` o `openai/gpt-4o`.
+
+### Cómo Ajustar el Timeout
+
+En `scripts/query.sh`, línea 64:
+
+```bash
+timeout 45 opencode run -m "$model" --format json --title "$TAG" "$prompt"
+```
+
+Cambia `45` por el número de segundos deseado. Para modelos lentos, 90-120 segundos es más realista.
+
+### Archivos de Prompt
+
+Los prompts individuales están en `reference/prompts/`. Puedes editarlos sin tocar el código:
+- `council-round1.md` — Prompt unificado de Ronda 1
+- `council-round2.md` — Prompt de debate
+- `council-pm.md` — Prompt del Project Manager
+- `council-fresh-eyes.md` — Prompt del validador
+- `lateral-thinker.md` — Prompt del Lateral Thinker
+
+---
+
+## Costo Operativo Estimado
+
+### Por Modo (por ejecución)
+
+| Modo | LLM calls | Tokens estimados (entrada+salida) | Costo con modelos gratis | Costo con modelos de pago |
+|------|-----------|----------------------------------|------------------------|--------------------------|
+| QUICK | 2-4 | ~5k-10k | $0 | ~$0.001-0.01 |
+| BALANCED | 5-8 | ~15k-30k | $0 | ~$0.005-0.05 |
+| THOROUGH | 12-17 | ~40k-80k | $0 | ~$0.02-0.20 |
+| RIGOROUS | 17-22 | ~60k-120k | $0 | ~$0.03-0.30 |
+| EXHAUSTIVE | 17-22 | ~60k-120k | $0 | ~$0.03-0.30 |
+
+### Desglose de LLM Calls por Modo
+
+**QUICK:** 2 modelos en Ronda 1 + 0-2 fallbacks = 2-4 calls
+**BALANCED:** 3 modelos en Ronda 1 + 1 PM + 3 en debate + 1 Fresh Eyes = 8 calls (más fallbacks)
+**THOROUGH+:** 5 modelos en Ronda 1 + 1 PM + 5×2 debate + 2 re-síntesis PM + 1 Fresh Eyes = ~17 calls
+
+### Modelos Gratuitos vs Pago
+
+| Aspecto | Gratuito (mimo-v2.5-free, openrouter/free) | Pago (Claude, GPT-4, Gemini) |
+|---------|-------------------------------------------|-------------------------------|
+| Costo | $0 | $ por ejecución |
+| Disponibilidad | Variable — pueden fallar por demanda | Estable — prioridad en cola |
+| Calidad de respuesta | Genérica, a veces evasiva | Profunda, específica, bien razonada |
+| Timeout práctico | 45s suele ser suficiente | 90-120s recomendado |
+
+**Recomendación:** Usa los modelos gratuitos para experimentar y familiarizarte. Cuando tengas decisiones importantes que evaluar, configura modelos de pago. El costo por ejecución en BALANCED con modelos de pago es de centavos de dólar.
+
+---
+
+## Troubleshooting
+
+### "No se pudo obtener respuesta" / Todos los modelos fallan
+
+**Causa más común:** Sin conexión a internet o OpenCode no está autenticado.
+
+**Verifica:**
+```bash
+opencode run -m "opencode/mimo-v2.5-free" --format json "di hola" 2>/dev/null | jq
+```
+Si esto falla, reinstala o reautentica OpenCode. El sistema no funciona sin conexión.
+
+### El PM produce síntesis vacía
+
+**Causa:** El modelo del PM (big-pickle) no responde o devuelve texto vacío.
+
+**Solución:** Cambia el PM en `scripts/council.sh` (línea 265) por un modelo que tengas disponible. Prueba con:
+```bash
+PM_PRIMARY="opencode/mimo-v2.5-free"
+```
+
+### Timeout en consultas
+
+**Síntoma:** Ves "FALLBACK" frecuentemente en stderr.
+
+**Causa:** El modelo primario no responde en 45 segundos.
+
+**Soluciones:**
+1. Aumenta el timeout en `scripts/query.sh` (línea 64): `timeout 90`
+2. Cambia el modelo primario por uno más rápido
+3. En redes lentas, los modelos gratuitos de OpenRouter pueden ser más estables
+
+### No veo la salida en stdout
+
+**Causa:** `council.sh` envía el resultado final a stdout y el proceso completo a stderr. Si ejecutas sin redirección, ves ambos mezclados si capturas la salida.
+
+**Para separar:**
+```bash
+./scripts/council.sh "pregunta" > resultado.txt 2>proceso.txt
+```
+
+### Modelos gratuitos dan respuestas genéricas o evasivas
+
+**Causa:** Los modelos gratuitos en OpenRouter tienen prioridad baja y pueden ser reemplazados por versiones más pequeñas durante saturación.
+
+**Solución:** No hay solución en el modelo gratuito. Si necesitas calidad consistente, usa modelos de pago. Para pruebas, acepta que las respuestas serán variables.
+
+### Error de sintaxis en los scripts
+
+**Causa:** Los scripts usan Bash 4+. Si tu sistema usa Bash 3 (macOS por defecto), algunas construcciones fallan.
+
+**Verifica:**
+```bash
+bash --version
+```
+Si es anterior a 4, instala Bash más reciente o usa `brew install bash` en macOS.
+
+### Limpieza de sesiones (directorio /tmp)
+
+El sistema crea directorios temporales con `mktemp -d` y los limpia automáticamente con `trap EXIT`. No deberían acumularse. Si quieres verificar:
+```bash
+ls /tmp/council-* 2>/dev/null    # No debería mostrar nada tras la ejecución
+```
+
+Si algún directorio queda huérfano (raro, pero posible si matas el proceso con SIGKILL), puedes limpiarlo manualmente:
+```bash
+rm -rf /tmp/tmp.council.* /tmp/council-*
+```
+
+---
+
 ## Estructura del Proyecto
 
 ```
@@ -833,6 +982,10 @@ R: Ningún LLM da garantía absoluta. Fresh Eyes es una capa de robustez en cade
 
 R: Impugn pasó pruebas en modo QUICK (2 modelos, síntesis generada correctamente) y BALANCED (3 modelos, 1 ronda de debate, Fresh Eyes con 8/10 en validación). THOROUGH, RIGOROUS y EXHAUSTIVE están diseñados y listos para ejecución.
 
+**P: ¿Se acumulan directorios en /tmp?** 
+
+R: No. `council.sh` usa `mktemp -d` y limpia con `trap 'rm -rf "$TMPDIR"' EXIT`. Si matas el proceso con SIGKILL (-9) podría quedar un directorio huérfano, pero en operación normal se borra solo. Para limpieza manual: `rm -rf /tmp/tmp.council.* /tmp/council-*`.
+
 **P: ¿Puedo añadir mis propios modelos?**
 
 R: Sí. Edita la sección de selección de modelos en `scripts/council.sh`. Cualquier modelo que acepte OpenCode funciona con el mismo prompt unificado.
@@ -860,6 +1013,7 @@ Estas son las fuentes académicas y técnicas que fundamentan los conceptos del 
 
 ## Historial de Versiones
 
+- **v2.2** — Añadidas secciones: Guía de Configuración (parámetros ajustables, modelos, timeout, archivos de prompt), Costo Operativo Estimado (LLM calls por modo, modelos gratis vs pago), Troubleshooting (errores comunes y soluciones). FAQ sobre limpieza de /tmp.
 - **v2.1** — README expandido con: sección "La Técnica" (fundamento epistemológico multi-modelo), "Conceptos Fundamentales" (meta-cognición forzada, groupthink, complacencia), "Lecciones Aprendidas" (de uso real), "Referencias" académicas. Documentación técnica de Manus AI integrada como fuente.
 - **v1.0** — Sistema de roles fijos (Filósofo, Matemático, Diseñador, Ingeniero, Director). Prompts individuales por rol. Debate por rol.
 
